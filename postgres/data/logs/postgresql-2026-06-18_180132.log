@@ -17,3 +17,5 @@
 2026-06-18 18:04:20.500 GMT [188] LOG:  logical decoding found consistent point at 0/19A4540
 2026-06-18 18:04:20.500 GMT [188] DETAIL:  There are no running transactions.
 2026-06-18 18:04:20.500 GMT [188] STATEMENT:  START_REPLICATION SLOT "debezium_slot" LOGICAL 0/1A16CE0 ("proto_version" '1', "publication_names" 'cdc_publication', "messages" 'true')
+2026-06-18 18:06:33.051 GMT [28] LOG:  checkpoint starting: time
+2026-06-18 18:06:34.509 GMT [28] LOG:  checkpoint complete: wrote 17 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.412 s, sync=0.021 s, total=1.459 s; sync files=13, longest=0.013 s, average=0.002 s; distance=41 kB, estimate=41 kB
