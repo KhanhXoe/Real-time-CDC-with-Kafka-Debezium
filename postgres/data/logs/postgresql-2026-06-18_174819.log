@@ -1,0 +1,217 @@
+2026-06-18 17:48:19.428 GMT [49] LOG:  starting PostgreSQL 15.18 (Debian 15.18-1.pgdg13+1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+2026-06-18 17:48:19.432 GMT [49] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+2026-06-18 17:48:19.445 GMT [53] LOG:  database system was shut down at 2026-06-18 17:48:19 GMT
+2026-06-18 17:48:19.454 GMT [49] LOG:  database system is ready to accept connections
+2026-06-18 17:48:19.597 GMT [61] LOG:  statement: CREATE DATABASE "enterprise_db" ;
+2026-06-18 17:48:19.732 GMT [63] LOG:  statement: CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+2026-06-18 17:48:19.739 GMT [63] LOG:  statement: CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+2026-06-18 17:48:19.746 GMT [63] LOG:  statement: CREATE SCHEMA IF NOT EXISTS ecommerce;
+2026-06-18 17:48:19.764 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.customers (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    firstname VARCHAR(20) NOT NULL,
+	    lastname VARCHAR(20) NOT NULL,
+	    email VARCHAR(30) NOT NULL UNIQUE,
+	    phone VARCHAR(12) NOT NULL,
+	    address VARCHAR(255) NOT NULL,
+	    tier VARCHAR(20) DEFAULT 'BRONZE' CHECK (tier IN ('BRONZE', 'SILVER', 'GOLD', 'PLATINUM')),
+	    total_spent DECIMAL(10, 2) DEFAULT 0,
+	    is_active BOOLEAN DEFAULT TRUE,
+	    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.775 GMT [63] LOG:  statement: CREATE INDEX idx_customers_email ON ecommerce.customers (email);
+2026-06-18 17:48:19.781 GMT [63] LOG:  statement: CREATE INDEX idx_customers_tier ON ecommerce.customers (tier);
+2026-06-18 17:48:19.790 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.products (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    sku VARCHAR(20) NOT NULL UNIQUE,
+	    name VARCHAR(100) NOT NULL,
+	    description TEXT NOT NULL,
+	    category VARCHAR(50) NOT NULL,
+	    price DECIMAL(10, 2) NOT NULL CHECK (price > 0),
+	    weight NUMERIC(5, 2),
+	    is_available BOOLEAN DEFAULT TRUE,
+	    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.804 GMT [63] LOG:  statement: CREATE INDEX idx_products_sku ON ecommerce.products (sku);
+2026-06-18 17:48:19.809 GMT [63] LOG:  statement: CREATE INDEX idx_products_category ON ecommerce.products (category);
+2026-06-18 17:48:19.818 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.orders (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    order_number VARCHAR(20) NOT NULL UNIQUE,
+	    customer_id UUID NOT NULL REFERENCES ecommerce.customers(id),
+	    total_amount DECIMAL(10, 2) NOT NULL CHECK (total_amount > 0),
+	    tax_amount DECIMAL(10, 2) NOT NULL CHECK (tax_amount > 0),
+	    shipping_amount DECIMAL(10, 2) NOT NULL CHECK (shipping_amount > 0),
+	    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
+	    shipping_address VARCHAR(70) NOT NULL,
+	    notes TEXT,
+	    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.832 GMT [63] LOG:  statement: CREATE INDEX idx_orders_order_number ON ecommerce.orders (order_number);
+2026-06-18 17:48:19.838 GMT [63] LOG:  statement: CREATE INDEX idx_orders_customer_id ON ecommerce.orders (customer_id);
+2026-06-18 17:48:19.843 GMT [63] LOG:  statement: CREATE INDEX idx_orders_status ON ecommerce.orders (status);
+2026-06-18 17:48:19.849 GMT [63] LOG:  statement: CREATE INDEX idx_orders_created_at ON ecommerce.orders (created_at DESC);
+2026-06-18 17:48:19.855 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.order_items (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    order_id UUID NOT NULL REFERENCES ecommerce.orders(id),
+	    product_id UUID NOT NULL REFERENCES ecommerce.products(id),
+	    quantity INT NOT NULL CHECK (quantity > 0),
+	    unit_price DECIMAL(10, 2) NOT NULL CHECK (unit_price > 0),
+	    total_price DECIMAL(10, 2) NOT NULL CHECK (total_price > 0),
+	    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.863 GMT [63] LOG:  statement: CREATE INDEX idx_order_items_order_id ON ecommerce.order_items (order_id);
+2026-06-18 17:48:19.870 GMT [63] LOG:  statement: CREATE INDEX idx_order_items_product_id ON ecommerce.order_items (product_id);
+2026-06-18 17:48:19.874 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.inventory (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    product_id UUID NOT NULL REFERENCES ecommerce.products(id),
+	    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+	    reserved_quantity INTEGER NOT NULL CHECK (reserved_quantity >= 0),
+	    available_quantity INTEGER NOT NULL CHECK (available_quantity >= 0),
+	    reorder_point INTEGER NOT NULL CHECK (reorder_point >= 0),
+	    reorder_quantity INTEGER NOT NULL CHECK (reorder_quantity >= 0),
+	    warehouse_location VARCHAR(50),
+	    last_restocked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.881 GMT [63] LOG:  statement: CREATE INDEX idx_inventory_product_id ON ecommerce.inventory (product_id);
+2026-06-18 17:48:19.890 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.audit_logs (
+	    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+	    table_name VARCHAR(50) NOT NULL,
+	    record_id UUID NOT NULL,
+	    action VARCHAR(10) NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
+	    old_value JSONB,
+	    new_value JSONB,
+	    change_by VARCHAR(50) DEFAULT CURRENT_USER,
+	    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.898 GMT [63] LOG:  statement: CREATE INDEX idx_audit_logs_table_name ON ecommerce.audit_logs (table_name);
+2026-06-18 17:48:19.904 GMT [63] LOG:  statement: CREATE INDEX idx_audit_logs_record_id ON ecommerce.audit_logs (record_id);
+2026-06-18 17:48:19.909 GMT [63] LOG:  statement: CREATE INDEX idx_audit_logs_updated_at ON ecommerce.audit_logs (updated_at DESC);
+2026-06-18 17:48:19.914 GMT [63] LOG:  statement: CREATE OR REPLACE FUNCTION ecommerce.update_timestamp()
+	RETURNS TRIGGER AS $$
+	BEGIN
+	    NEW.updated_at = CURRENT_TIMESTAMP;
+	    RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql;
+2026-06-18 17:48:19.916 GMT [63] LOG:  statement: CREATE TRIGGER trg_update_customers_timestamp
+	    BEFORE UPDATE ON ecommerce.customers
+	    FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
+2026-06-18 17:48:19.918 GMT [63] LOG:  statement: CREATE TRIGGER trg_update_products_timestamp
+	    BEFORE UPDATE ON ecommerce.products
+	    FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
+2026-06-18 17:48:19.920 GMT [63] LOG:  statement: CREATE TRIGGER trg_update_orders_timestamp
+	    BEFORE UPDATE ON ecommerce.orders
+	    FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
+2026-06-18 17:48:19.922 GMT [63] LOG:  statement: CREATE TRIGGER trg_update_order_items_timestamp
+	    BEFORE UPDATE ON ecommerce.order_items
+	    FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
+2026-06-18 17:48:19.923 GMT [63] LOG:  statement: CREATE TRIGGER trg_update_inventory_timestamp
+	    BEFORE UPDATE ON ecommerce.inventory
+	    FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
+2026-06-18 17:48:19.925 GMT [63] LOG:  statement: CREATE SEQUENCE IF NOT EXISTS ecommerce.order_number_seq START WITH 1;
+2026-06-18 17:48:19.927 GMT [63] LOG:  statement: CREATE OR REPLACE FUNCTION ecommerce.generate_order_number()
+	RETURNS TRIGGER AS $$
+	BEGIN
+	    NEW.order_number := CONCAT('ORD-', EXTRACT(YEAR FROM CURRENT_DATE), '-', LPAD(NEXTVAL('ecommerce.order_number_seq'), 6, '0'));
+	    RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql;
+2026-06-18 17:48:19.929 GMT [63] LOG:  statement: CREATE TRIGGER trg_generate_order_number
+	    BEFORE INSERT ON ecommerce.orders
+	    FOR EACH ROW 
+	        WHEN (NEW.order_number IS NULL OR NEW.order_number = '')
+	        EXECUTE FUNCTION ecommerce.generate_order_number();
+2026-06-18 17:48:19.931 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.cdc_heartbeat (
+	    id SERIAL PRIMARY KEY,
+	    ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.936 GMT [63] LOG:  statement: CREATE INDEX idx_cdc_heartbeat_ts ON ecommerce.cdc_heartbeat (ts DESC);
+2026-06-18 17:48:19.942 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.debezium_signals (
+	    id VARCHAR(64) PRIMARY KEY,
+	    type VARCHAR(50) NOT NULL,
+	    data TEXT
+	);
+2026-06-18 17:48:19.951 GMT [63] LOG:  statement: CREATE TABLE IF NOT EXISTS ecommerce.cdc_metrics (
+	    id BIGSERIAL PRIMARY KEY,
+	    table_name VARCHAR(50) NOT NULL,
+	    operation VARCHAR(10) NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
+	    record_count BIGINT NOT NULL DEFAULT 1,
+	    measured_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+2026-06-18 17:48:19.956 GMT [63] LOG:  statement: CREATE INDEX idx_cdc_metrics_table_name ON ecommerce.cdc_metrics (table_name, operation);
+2026-06-18 17:48:19.962 GMT [63] LOG:  statement: CREATE PUBLICATION cdc_publication FOR TABLE
+	    ecommerce.customers,
+	    ecommerce.products,
+	    ecommerce.orders,
+	    ecommerce.order_items,
+	    ecommerce.inventory,
+	    ecommerce.debezium_signals;
+2026-06-18 17:48:19.964 GMT [63] LOG:  statement: GRANT USAGE ON SCHEMA ecommerce TO cdc_user;
+2026-06-18 17:48:19.966 GMT [63] LOG:  statement: GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ecommerce TO cdc_user;
+2026-06-18 17:48:19.968 GMT [63] LOG:  statement: GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ecommerce TO cdc_user;
+2026-06-18 17:48:19.970 GMT [63] LOG:  statement: GRANT SELECT ON ALL TABLES IN SCHEMA ecommerce TO cdc_user;
+2026-06-18 17:48:19.971 GMT [63] LOG:  statement: CREATE OR REPLACE VIEW ecommerce.dashboard_metrics AS
+	SELECT 
+	    (SELECT COUNT(*) FROM ecommerce.customers WHERE is_active = TRUE) as active_customers,
+	    (SELECT COUNT(*) FROM ecommerce.products WHERE is_available = TRUE) as available_products,
+	    (SELECT COUNT(*) FROM ecommerce.orders WHERE created_at >= CURRENT_DATE) as orders_today,
+	    (SELECT COALESCE(SUM(total_amount), 0) FROM ecommerce.orders WHERE created_at >= CURRENT_DATE) as revenue_today;
+2026-06-18 17:48:19.974 GMT [63] LOG:  statement: GRANT SELECT ON ecommerce.dashboard_metrics TO cdc_user;
+2026-06-18 17:48:19.976 GMT [63] LOG:  statement: CREATE OR REPLACE VIEW ecommerce.cdc_replication_status AS
+	SELECT 
+	    slot_name,
+	    active,
+	    restart_lsn,
+	    confirmed_flush_lsn,
+	    pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as lag_size,
+	    EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) as lag_seconds
+	FROM pg_replication_slots
+	WHERE slot_name LIKE 'debezium%';
+2026-06-18 17:48:19.978 GMT [63] LOG:  statement: CREATE OR REPLACE FUNCTION ecommerce.get_table_counts()
+	RETURNS TABLE (
+	    table_name TEXT,
+	    row_count BIGINT,
+	    last_updated TIMESTAMP WITH TIME ZONE
+	) AS $$
+	BEGIN
+	    RETURN QUERY
+	    SELECT 'customers'::TEXT, COUNT(*)::BIGINT, MAX(updated_at) FROM ecommerce.customers
+	    UNION ALL
+	    SELECT 'products'::TEXT, COUNT(*)::BIGINT, MAX(updated_at) FROM ecommerce.products
+	    UNION ALL
+	    SELECT 'orders'::TEXT, COUNT(*)::BIGINT, MAX(updated_at) FROM ecommerce.orders
+	    UNION ALL
+	    SELECT 'order_items'::TEXT, COUNT(*)::BIGINT, MAX(created_at) FROM ecommerce.order_items
+	    UNION ALL
+	    SELECT 'inventory'::TEXT, COUNT(*)::BIGINT, MAX(updated_at) FROM ecommerce.inventory;
+	END;
+	$$ LANGUAGE plpgsql;
+2026-06-18 17:48:19.980 GMT [63] LOG:  statement: CREATE OR REPLACE FUNCTION ecommerce.track_table_changes()
+	RETURNS TRIGGER AS $$
+	BEGIN
+	    INSERT INTO ecommerce.cdc_metrics (table_name, operation)
+	    VALUES (TG_TABLE_NAME, TG_OP);
+	    RETURN NULL;
+	END;
+	$$ LANGUAGE plpgsql;
+2026-06-18 17:48:19.981 GMT [63] LOG:  statement: CREATE TRIGGER trg_track_customers_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.customers
+	FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+2026-06-18 17:48:19.983 GMT [63] LOG:  statement: CREATE TRIGGER trg_track_products_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.products
+	FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+2026-06-18 17:48:19.984 GMT [63] LOG:  statement: CREATE TRIGGER trg_track_orders_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.orders
+	FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+2026-06-18 17:48:19.986 GMT [63] LOG:  statement: CREATE TRIGGER trg_track_order_items_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.order_items
+	FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+2026-06-18 17:48:19.987 GMT [63] LOG:  statement: CREATE TRIGGER trg_track_inventory_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.inventory
+	FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+2026-06-18 17:48:19.991 GMT [49] LOG:  received fast shutdown request
+2026-06-18 17:48:19.994 GMT [49] LOG:  aborting any active transactions
+2026-06-18 17:48:19.995 GMT [49] LOG:  background worker "logical replication launcher" (PID 56) exited with exit code 1
+2026-06-18 17:48:19.996 GMT [51] LOG:  shutting down
+2026-06-18 17:48:19.999 GMT [51] LOG:  checkpoint starting: shutdown immediate
+2026-06-18 17:48:20.125 GMT [51] LOG:  checkpoint complete: wrote 996 buffers (3.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.023 s, sync=0.091 s, total=0.130 s; sync files=356, longest=0.003 s, average=0.001 s; distance=4713 kB, estimate=4713 kB
+2026-06-18 17:48:20.132 GMT [49] LOG:  database system is shut down
