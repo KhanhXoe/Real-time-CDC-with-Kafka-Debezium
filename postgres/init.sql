@@ -5,6 +5,14 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- SCHEMA ecommerce
 CREATE SCHEMA IF NOT EXISTS ecommerce;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cdc_user') THEN
+        CREATE ROLE cdc_user WITH LOGIN PASSWORD 'cdc_password' REPLICATION;
+    END IF;
+END
+$$;
+
 -- TABLE Customers
 CREATE TABLE IF NOT EXISTS ecommerce.customers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -49,6 +57,7 @@ CREATE TABLE IF NOT EXISTS ecommerce.products (
     category VARCHAR(50) NOT NULL,
     price DECIMAL(10, 2) NOT NULL CHECK (price > 0),
     weight NUMERIC(5, 2),
+    is_available BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -100,8 +109,8 @@ CREATE TABLE IF NOT EXISTS ecommerce.orders (
     status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED')),
     shipping_address VARCHAR(70) NOT NULL,
     notes TEXT,
-    created_at TIMESTAMP NOT NULL WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_orders_order_number ON ecommerce.orders (order_number);
 CREATE INDEX idx_orders_customer_id ON ecommerce.orders (customer_id);
@@ -117,7 +126,8 @@ CREATE TABLE IF NOT EXISTS ecommerce.order_items (
     quantity INT NOT NULL CHECK (quantity > 0),
     unit_price DECIMAL(10, 2) NOT NULL CHECK (unit_price > 0),
     total_price DECIMAL(10, 2) NOT NULL CHECK (total_price > 0),
-    created_at TIMESTAMP NOT NULL WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_order_items_order_id ON ecommerce.order_items (order_id);
 CREATE INDEX idx_order_items_product_id ON ecommerce.order_items (product_id);
@@ -133,16 +143,24 @@ CREATE TABLE IF NOT EXISTS ecommerce.inventory (
     reorder_point INTEGER NOT NULL CHECK (reorder_point >= 0),
     reorder_quantity INTEGER NOT NULL CHECK (reorder_quantity >= 0),
     warehouse_location VARCHAR(50),
-    last_restocked_at TIMESTAMP NOT NULL WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    last_restocked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_inventory_product_id ON ecommerce.inventory (product_id);
 
-INSERT INTO ecommerce.inventory (product_id, quantity, reserved, warehouse_location, reorder_point, reorder_quantity)
+INSERT INTO ecommerce.inventory (product_id, quantity, reserved_quantity, available_quantity, warehouse_location, reorder_point, reorder_quantity)
+WITH stock AS (
+    SELECT
+        id,
+        (RANDOM() * 200 + 50)::INTEGER AS quantity,
+        (RANDOM() * 10)::INTEGER AS reserved_quantity
+    FROM ecommerce.products
+)
 SELECT
     id,
-    (RANDOM() * 200 + 50)::INTEGER     AS quantity,
-    (RANDOM() * 10)::INTEGER           AS reserved,
+    quantity,
+    reserved_quantity,
+    quantity - reserved_quantity AS available_quantity,
     CASE FLOOR(RANDOM() * 3)::INTEGER
         WHEN 0 THEN 'WAREHOUSE-A'
         WHEN 1 THEN 'WAREHOUSE-B'
@@ -150,7 +168,7 @@ SELECT
     END AS warehouse_location,
     (RANDOM() * 20 + 10)::INTEGER AS reorder_point,
     (RANDOM() * 50 + 20)::INTEGER AS reorder_quantity
-FROM ecommerce.products;
+FROM stock;
 
 
 -- TABLE audit_logs
@@ -162,7 +180,7 @@ CREATE TABLE IF NOT EXISTS ecommerce.audit_logs (
     old_value JSONB,
     new_value JSONB,
     change_by VARCHAR(50) DEFAULT CURRENT_USER,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_audit_logs_table_name ON ecommerce.audit_logs (table_name);
 CREATE INDEX idx_audit_logs_record_id ON ecommerce.audit_logs (record_id);
@@ -199,9 +217,11 @@ CREATE TRIGGER trg_update_inventory_timestamp
     FOR EACH ROW EXECUTE FUNCTION ecommerce.update_timestamp();
 
 -- FUNCTION: GENERATE ORDER NUMBER
+CREATE SEQUENCE IF NOT EXISTS ecommerce.order_number_seq START WITH 1;
+
 CREATE OR REPLACE FUNCTION ecommerce.generate_order_number()
-RETURN TRIGGER AS $$
-DECLARE
+RETURNS TRIGGER AS $$
+BEGIN
     NEW.order_number := CONCAT('ORD-', EXTRACT(YEAR FROM CURRENT_DATE), '-', LPAD(NEXTVAL('ecommerce.order_number_seq'), 6, '0'));
     RETURN NEW;
 END;
@@ -221,17 +241,18 @@ CREATE TABLE IF NOT EXISTS ecommerce.cdc_heartbeat (
     ts TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_cdc_heartbeat_ts ON ecommerce.cdc_heartbeat (ts DESC);
-INSERT INTO ecommerce.cdc_heartbeat (ts) VALUES (1, NOW());
+INSERT INTO ecommerce.cdc_heartbeat (id, ts) VALUES (1, NOW())
+ON CONFLICT (id) DO UPDATE SET ts = EXCLUDED.ts;
 
 
-CREATE TABLE ecommerce.debezium_signals (
-    id SERIAL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS ecommerce.debezium_signals (
+    id VARCHAR(64) PRIMARY KEY,
     type VARCHAR(50) NOT NULL,
     data TEXT
 );
 
-CREATE TABLE ecommerce.cdc_metrics (
-    is BIGSERIAL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS ecommerce.cdc_metrics (
+    id BIGSERIAL PRIMARY KEY,
     table_name VARCHAR(50) NOT NULL,
     operation VARCHAR(10) NOT NULL CHECK (operation IN ('INSERT', 'UPDATE', 'DELETE')),
     record_count BIGINT NOT NULL DEFAULT 1,
@@ -244,15 +265,13 @@ CREATE PUBLICATION cdc_publication FOR TABLE
     ecommerce.products,
     ecommerce.orders,
     ecommerce.order_items,
-    ecommerce.inventory;
+    ecommerce.inventory,
+    ecommerce.debezium_signals;
 
 GRANT USAGE ON SCHEMA ecommerce TO cdc_user;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ecommerce TO cdc_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ecommerce TO cdc_user;
 GRANT SELECT ON ALL TABLES IN SCHEMA ecommerce TO cdc_user;
-
-
-ALTER USER cdc_user WITH REPLICATION;
 
 CREATE OR REPLACE VIEW ecommerce.dashboard_metrics AS
 SELECT 
@@ -315,5 +334,8 @@ FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
 CREATE TRIGGER trg_track_orders_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.orders
 FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
 
-CREATE TRIGGER trg_track_order_items_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.inventory
+CREATE TRIGGER trg_track_order_items_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.order_items
+FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
+
+CREATE TRIGGER trg_track_inventory_cdc AFTER INSERT OR UPDATE OR DELETE ON ecommerce.inventory
 FOR EACH ROW EXECUTE FUNCTION ecommerce.track_table_changes();
