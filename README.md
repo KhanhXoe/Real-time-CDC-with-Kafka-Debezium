@@ -10,7 +10,7 @@
 
 ```
 ┌─────────────────┐    WAL Logs     ┌───────────────┐    Events     ┌─────────────┐
-│   PostgreSQL 15 │ ─────────────► │    Debezium   │ ────────────► │    Kafka    │
+│   PostgreSQL 15 │ ─────────────►  │    Debezium   │ ────────────► │    Kafka    │
 │  (Source DB)    │  logical repl.  │  (Connector)  │               │  (Broker)   │
 └─────────────────┘                 └───────────────┘               └──────┬──────┘
                                                                            │
