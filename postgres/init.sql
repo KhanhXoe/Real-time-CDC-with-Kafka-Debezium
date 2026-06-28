@@ -222,7 +222,7 @@ CREATE SEQUENCE IF NOT EXISTS ecommerce.order_number_seq START WITH 1;
 CREATE OR REPLACE FUNCTION ecommerce.generate_order_number()
 RETURNS TRIGGER AS $$
 BEGIN
-    NEW.order_number := CONCAT('ORD-', EXTRACT(YEAR FROM CURRENT_DATE), '-', LPAD(NEXTVAL('ecommerce.order_number_seq'), 6, '0'));
+    NEW.order_number := CONCAT('ORD-', EXTRACT(YEAR FROM CURRENT_DATE), '-', LPAD(NEXTVAL('ecommerce.order_number_seq')::TEXT, 6, '0'));
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

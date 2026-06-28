@@ -105,7 +105,28 @@ services:
       DYNAMIC_CONFIG_ENABLED: true
     networks:
       - real-time-cdc-network
-  
+
+  adminer:
+    image: adminer:latest
+    container_name: cdc-adminer
+    ports:
+      - 8081:8080
+    networks:
+      - real-time-cdc-network
+
+  dashboard:
+    build: ./dashboard
+    container_name: cdc-dashboard
+    ports:
+      - 8501:8501
+    environment:
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - real-time-cdc-network
+
 volumes:
   postgres_data:
   kafka_data:
