@@ -1,10 +1,10 @@
 # Real-time CDC Pipeline
 
-A production-style **Change Data Capture (CDC)** pipeline that streams every INSERT, UPDATE, and DELETE from PostgreSQL to Kafka in real time — no polling, no delay. Built as a local proof-of-concept with a clear migration path to AWS.
+A production-style **Change Data Capture (CDC)** pipeline that streams every INSERT, UPDATE, and DELETE from PostgreSQL to Kafka in real time — no polling, no delay. Today it runs end-to-end locally; the roadmap extends it into a **streaming lakehouse** (Flink → Iceberg → MinIO/S3) with a clear migration path to AWS.
 
 ---
 
-## Architecture
+## Architecture (today)
 
 ```
 ┌─────────────────────┐   WAL (logical replication)   ┌─────────────────┐
@@ -18,10 +18,10 @@ A production-style **Change Data Capture (CDC)** pipeline that streams every INS
                                                        └────────┬────────┘
                                           ┌────────────────────┼────────────────────┐
                                           │                    │                    │
-                               ┌──────────▼──────┐  ┌─────────▼──────┐  ┌─────────▼──────┐
-                               │   Kafka UI      │  │   Dashboard    │  │  Future sinks  │
-                               │  (monitoring)   │  │  (Streamlit)   │  │  Spark, Flink  │
-                               └─────────────────┘  └────────────────┘  └────────────────┘
+                               ┌──────────▼──────┐  ┌─────────▼──────┐  ┌─────────▼──────────┐
+                               │   Kafka UI      │  │   Dashboard    │  │  Flink → Iceberg   │
+                               │  (monitoring)   │  │  (Streamlit)   │  │  (lakehouse, next) │
+                               └─────────────────┘  └────────────────┘  └────────────────────┘
 ```
 
 **How it works:**
@@ -29,6 +29,8 @@ A production-style **Change Data Capture (CDC)** pipeline that streams every INS
 2. Debezium reads the WAL via a **replication slot** and **publication**, packaging each change as a JSON event.
 3. Events land on **Kafka topics** (`cdc.ecommerce.<table>`), partitioned and retained for downstream consumers.
 4. The Streamlit dashboard consumes topics directly and renders live metrics.
+
+> The fourth box — **Flink → Iceberg** — is the next milestone. See [Roadmap](#roadmap--from-cdc-demo-to-streaming-lakehouse) for the full target architecture.
 
 ---
 
@@ -42,6 +44,8 @@ A production-style **Change Data Capture (CDC)** pipeline that streams every INS
 | Kafka UI | `provectuslabs/kafka-ui:latest` | `8080` | Web UI to inspect topics and messages |
 | Adminer | `adminer:latest` | `8081` | Lightweight PostgreSQL web UI |
 | Dashboard | `./dashboard` (Streamlit) | `8501` | Real-time CDC event dashboard from Kafka |
+
+*Coming in the roadmap:* **Apache Flink** (stream processor), **Apache Iceberg** (table format), **MinIO** (S3-compatible object store).
 
 ---
 
@@ -86,6 +90,8 @@ Real-time CDC/
     ├── Dockerfile
     └── requirements.txt
 ```
+
+A [proposed structure](#proposed-file-structure) for the Flink/lakehouse work is described in the roadmap.
 
 ---
 
@@ -223,84 +229,173 @@ docker compose up -d
 
 ---
 
----
+# Roadmap — From CDC Demo to Streaming Lakehouse
 
-# Phase 2 — Scaling to AWS
+The pipeline above is the foundation. The next direction is to turn it into an end-to-end **streaming lakehouse** that runs locally and maps cleanly onto AWS:
+
+```text
+PostgreSQL → Debezium → Kafka → Flink → Iceberg → MinIO/S3
+```
+
+A Flink job consumes the `cdc.ecommerce.*` topics, parses Debezium payloads into row-level change events, and applies them to **Iceberg** tables stored on **MinIO** (an S3-compatible object store). Once the local flow is stable, the same job maps to AWS using RDS PostgreSQL, MSK, Amazon Managed Service for Apache Flink, S3, and Glue Catalog — without rewriting the processing logic.
 
 ## Target Architecture
 
 ```
-┌──────────────────────┐     CDC / DMS      ┌──────────────────┐
-│  Amazon RDS          │ ──────────────────► │   Amazon MSK     │
-│  (PostgreSQL 15)     │  or Debezium        │   (Managed Kafka)│
-│  Multi-AZ, encrypted │  on ECS Fargate     └────────┬─────────┘
-└──────────────────────┘                              │
-                                     ┌────────────────┼─────────────────────┐
-                                     │                │                     │
-                           ┌─────────▼──────┐  ┌─────▼──────────┐  ┌──────▼──────────┐
-                           │  Kinesis Data  │  │   AWS Lambda   │  │  Apache Flink   │
-                           │  Firehose      │  │  (event-driven)│  │  on Amazon EMR  │
-                           └─────────┬──────┘  └─────┬──────────┘  └──────┬──────────┘
-                                     │               │                     │
-                            ┌────────▼────────┐  ┌──▼───────────┐  ┌──────▼──────────┐
-                            │   Amazon S3     │  │  DynamoDB    │  │  Amazon         │
-                            │  (Data Lake)    │  │  (Real-time) │  │  Redshift       │
-                            └────────┬────────┘  └──────────────┘  │  (Data Warehouse│
-                                     │                              └──────┬──────────┘
-                              ┌──────▼──────┐                      ┌──────▼──────────┐
-                              │  AWS Glue   │                      │  Amazon         │
-                              │  (ETL/Cat.) │                      │  QuickSight     │
-                              └─────────────┘                      └─────────────────┘
+┌──────────────┐   WAL    ┌──────────────┐   JSON    ┌──────────────┐
+│ PostgreSQL15 │ ───────► │   Debezium   │ ────────► │    Kafka     │
+│  ecommerce   │ logical  │ Kafka Connect│  events   │   (KRaft)    │
+└──────────────┘          └──────────────┘           └──────┬───────┘
+                                                            │ cdc.ecommerce.*
+                                                     ┌──────▼───────┐
+                                                     │    Flink     │  parse Debezium,
+                                                     │  stream job  │  apply by primary key
+                                                     └──────┬───────┘
+                                                            │ upsert / delete
+                                                     ┌──────▼───────┐
+                                                     │   Iceberg    │  lakehouse
+                                                     │   tables     │  table format
+                                                     └──────┬───────┘
+                                                            │
+                                                     ┌──────▼───────┐
+                                                     │  MinIO / S3  │  warehouse storage
+                                                     └──────────────┘
 ```
 
-## Migration Map: Local → AWS
+## Current State vs. What's Missing
+
+**Already built:**
+- `docker-compose.yml` starts PostgreSQL, Kafka, Debezium Connect, Kafka UI, Adminer, and the Streamlit dashboard.
+- PostgreSQL logical replication via `postgres/postgresql.conf`.
+- The `ecommerce` schema with source tables, `cdc_publication`, replication-slot config, a heartbeat table, and a Debezium signal table.
+- `debezium/postgres-connector.json` — initial snapshot + CDC streaming into `cdc.ecommerce.*` topics.
+- `scripts/generate_data.py` — continuous INSERT/UPDATE/DELETE generator.
+
+**Missing for a full lakehouse:**
+- A Flink job that consumes Kafka CDC events.
+- A durable analytics sink (Iceberg on MinIO/S3).
+- Automation scripts for registering the connector, submitting the Flink job, and verifying output.
+- Checkpoint and restart behavior for the stream processor.
+- Observability for Kafka lag, connector status, Flink metrics, and storage output.
+- Environment-specific config for local vs. AWS deployment.
+
+## Milestones
+
+### M1 — Local End-to-End Lakehouse Demo
+
+Run the full CDC flow from PostgreSQL to Iceberg on MinIO.
+
+- Add MinIO and a Flink JobManager/TaskManager to `docker-compose.yml`, with the dependencies needed to read Kafka and write Iceberg to S3-compatible storage.
+- Implement a Flink job that reads all five `cdc.ecommerce.*` topics, extracts operation type / primary key / before-after payloads / source timestamp, and writes to Iceberg tables matching the source schema.
+- Add scripts to register the connector, submit the Flink job, generate test events, and verify output in MinIO/Iceberg.
+
+**Done when:** `docker compose up -d` starts the full stack, the connector registers and topics appear, the Flink job consumes events, and inserts/updates/deletes are reflected correctly in Iceberg tables backed by MinIO objects.
+
+### M2 — Reliability Hardening
+
+Make the pipeline restartable and avoid event loss in local failure scenarios.
+
+- Enable Flink checkpointing with checkpoint storage on MinIO; configure a restart strategy.
+- Define primary-key and upsert/delete behavior per Iceberg table; handle Debezium tombstone/delete events.
+- Validate duplicate-event handling and idempotency by primary key.
+- Document the delivery semantics (at-least-once vs. exactly-once) given the final Flink/Iceberg config.
+
+**Done when:** restarting a Flink TaskManager resumes from checkpoint, Kafka events are not lost, and updates/deletes do not create incorrect records.
+
+### M3 — Observability and Operations
+
+Make pipeline health, lag, and failures visible.
+
+- Health checks and runbook notes for PostgreSQL, Kafka, Debezium, Flink, and MinIO.
+- Track connector status (Kafka Connect REST API), Kafka consumer lag for the Flink group, and Flink job/checkpoint status.
+- Script-based validation of Iceberg row counts and latest updates.
+- Troubleshooting notes: connector failure, replication-slot lag, missing Kafka messages, Flink job failure, MinIO permission errors.
+
+**Done when:** connector status is quick to check (RUNNING/FAILED), Flink Kafka lag is inspectable, and the latest successful Iceberg write can be verified.
+
+### M4 — AWS-Ready Deployment Path
+
+Structure the pipeline so it deploys to AWS without rewriting the processing flow.
+
+- Split configuration into local and AWS profiles; make the MinIO/S3 endpoint configurable.
+- Add support for Glue Catalog as the Iceberg catalog.
+- Document the RDS logical-replication settings and the network/security requirements (security groups, subnets, IAM roles, S3 bucket policy, Glue permissions, MSK connectivity).
+- Default AWS target is **Amazon Managed Service for Apache Flink**, with EKS/ECS as alternatives when runtime control is required.
+
+**Done when:** the same Flink job runs against S3 + Glue Catalog, no cloud credentials are hard-coded, and a minimum AWS deployment checklist exists.
+
+> **Principle:** endpoints, credentials, bucket names, warehouse paths, catalog type, and connector settings come from environment variables or env-specific config files. Never hard-code AWS values in application code.
+
+## Data Design & Mapping
+
+| Kafka topic | Iceberg table |
+| --- | --- |
+| `cdc.ecommerce.customers` | `ecommerce.customers` |
+| `cdc.ecommerce.products` | `ecommerce.products` |
+| `cdc.ecommerce.orders` | `ecommerce.orders` |
+| `cdc.ecommerce.order_items` | `ecommerce.order_items` |
+| `cdc.ecommerce.inventory` | `ecommerce.inventory` |
+
+Each Iceberg table keeps the business columns from PostgreSQL and adds CDC metadata:
+
+- `cdc_op` — Debezium operation (`c`, `u`, `d`, `r`)
+- `cdc_source_ts_ms` — source event timestamp
+- `cdc_processed_at` — when Flink processed the event
+- `cdc_topic` / `cdc_partition` / `cdc_offset` — Kafka provenance
+
+Updates and deletes are applied by the source table's primary key. For a current-state table, use Iceberg upsert/delete semantics rather than an append-only log; if full audit history is needed, add a separate append-only changelog layer.
+
+## Local → AWS Migration Map
 
 | Local component | AWS equivalent | Notes |
-|----------------|---------------|-------|
-| PostgreSQL 15 (Docker) | **Amazon RDS PostgreSQL** or **Aurora PostgreSQL** | Enable logical replication: `rds.logical_replication = 1` |
+|----------------|----------------|-------|
+| PostgreSQL 15 (Docker) | **Amazon RDS for PostgreSQL** (or Aurora) | Enable `rds.logical_replication = 1` |
 | Debezium (Docker) | **Debezium on ECS Fargate** or **AWS DMS** | DMS is simpler to operate; Debezium gives more control |
-| Kafka (KRaft) | **Amazon MSK** (Managed Kafka) | MSK removes broker management overhead |
-| `./postgres/data` bind mount | **RDS automated backups + Multi-AZ** | Point-in-time recovery built in |
-| Streamlit Dashboard | **Amazon ECS** + **Application Load Balancer** | Or replace with QuickSight for managed BI |
-| Manual connector registration | **AWS Lambda** or **Step Functions** | Automate connector lifecycle on deploy |
-| `generate_data.py` (local) | **ECS Task** or **AWS Batch** | Run as a scheduled or on-demand task |
+| Kafka (KRaft) | **Amazon MSK** | Removes broker management overhead |
+| Flink (Docker) | **Amazon Managed Service for Apache Flink** | EKS/ECS when runtime control is required |
+| MinIO | **Amazon S3** | Iceberg warehouse storage |
+| Local Iceberg catalog | **AWS Glue Data Catalog** | Shared metastore for Iceberg tables |
+| Hard-coded local config | **AWS Secrets Manager / SSM Parameter Store** | Endpoints, credentials, bucket names |
+| Local metrics & logs | **CloudWatch + MSK/Flink metrics** | Connector health, lag, checkpoints |
+| `generate_data.py` (local) | **ECS Task** or **AWS Batch** | Scheduled or on-demand |
 
-## Phase 2 Roadmap
+**What stays the same:** the Debezium connector config, the schema design, and the Kafka topic naming convention all carry forward. The main differences are the broker endpoint and authentication method (IAM or SASL/SCRAM on MSK), and the Iceberg catalog/storage targets.
 
-### Stage 1 — Lift & Shift (low risk)
-- Migrate PostgreSQL → **RDS PostgreSQL 15** with `logical_replication` enabled
-- Move Kafka → **Amazon MSK** (2 brokers, 3 AZs)
-- Deploy Debezium as an **ECS Fargate** service (containerize the existing image)
-- Store connector config in **AWS Secrets Manager**
+## Proposed File Structure
 
-### Stage 2 — Cloud-native sinks
-- Add **Kafka Connect S3 Sink** → land raw CDC events in **S3** as Parquet (data lake)
-- Add **Kafka Connect Redshift Sink** → stream aggregated data into **Redshift** for BI
-- Catalog S3 data with **AWS Glue Data Catalog** + run ad-hoc queries via **Athena**
+When lakehouse implementation starts, add:
 
-### Stage 3 — Real-time processing
-- Deploy **Apache Flink on Amazon EMR** (or **Kinesis Data Analytics**) for stream aggregations:
-  - Rolling revenue per customer tier
-  - Inventory reorder alerts
-  - Order lifecycle SLA monitoring
-- Write aggregated results to **DynamoDB** for low-latency API reads
+```text
+docs/
+  AWS_DEPLOYMENT.md      # added when M4 starts
+  TROUBLESHOOTING.md     # added after real runtime issues are observed
 
-### Stage 4 — Observability & governance
-- **CloudWatch** metrics for MSK lag, Debezium connector health, ECS CPU/memory
-- **AWS Glue** data quality checks on S3 landing zone
-- **Lake Formation** for fine-grained column-level access control
-- **SNS / PagerDuty** alerts on connector failures or WAL lag spikes
+flink/
+  jobs/
+  conf/
+  Dockerfile
 
-## Cost Drivers to Watch
+scripts/
+  register-connector.sh
+  submit-flink-job.sh
+  generate-cdc-events.sh
+  verify-lake-output.sh
 
-| Resource | Cost lever |
-|----------|-----------|
-| MSK | Broker instance type and count — start with `kafka.m5.large` x2 |
-| RDS | Multi-AZ doubles storage I/O cost — enable only in production |
-| Kinesis Firehose | Charged per GB delivered — compress with GZIP before S3 |
-| Redshift | Use **Serverless** for dev/staging; provisioned clusters for production |
-| Glue ETL | Billed per DPU-hour — batch jobs at off-peak hours |
+config/
+  local.env.example      # placeholders only, never real secrets
+  aws.env.example
+```
 
-## What Stays the Same
+## Recommended Next Steps
 
-The Debezium connector config (`debezium/postgres-connector.json`), the schema design, and the Kafka topic naming convention all carry forward unchanged. The only difference is the broker endpoint and authentication method (IAM or SASL/SCRAM on MSK).
+1. Add MinIO and Flink to Docker Compose.
+2. Choose the Flink job packaging approach and required Iceberg/Kafka dependencies.
+3. Implement the job for one table first — start with `customers`.
+4. Verify insert/update/delete behavior for `customers`.
+5. Expand the job to the remaining tables.
+6. Add checkpointing and restart tests.
+7. Add the runbook and AWS deployment mapping.
+
+## Out of Scope (for the first milestone)
+
+Keep these until the local end-to-end flow is stable: real AWS deployment, full CI/CD, Terraform/IaC, complete monitoring dashboards, a dedicated data-quality framework, multi-tenant/multi-database CDC, and a Schema Registry (unless the first demo needs it).
