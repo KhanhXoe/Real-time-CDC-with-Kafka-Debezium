@@ -11,10 +11,16 @@ import os
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:29092")
 TOPICS = [
     "cdc.ecommerce.customers",
+    "cdc.ecommerce.customer_addresses",
     "cdc.ecommerce.products",
     "cdc.ecommerce.orders",
     "cdc.ecommerce.order_items",
     "cdc.ecommerce.inventory",
+    "cdc.ecommerce.inventory_movements",
+    "cdc.ecommerce.carts",
+    "cdc.ecommerce.cart_items",
+    "cdc.ecommerce.payments",
+    "cdc.ecommerce.shipments",
 ]
 MAX_EVENTS = 500
 OP_MAP = {"c": "INSERT", "u": "UPDATE", "d": "DELETE", "r": "READ"}
@@ -77,7 +83,8 @@ for _ in range(300):
         # Track revenue from delivered orders
         if table == "orders" and op == "UPDATE":
             after = value.get("after") or {}
-            if after.get("status") == "DELIVERED":
+            order_status = after.get("order_status") or after.get("status")
+            if order_status in {"delivered", "DELIVERED"}:
                 st.session_state.revenue += float(after.get("total_amount", 0))
 
     except Exception:
