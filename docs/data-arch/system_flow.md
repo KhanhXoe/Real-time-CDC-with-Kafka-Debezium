@@ -39,8 +39,6 @@ The operational system must support:
 - Promotions and discount campaigns.
 - Supplier purchase orders for restocking.
 
-
-
 ## 3. Main Business Entities
 
 
@@ -59,8 +57,6 @@ The operational system must support:
 | Promotion   | `promotions`                                             | Discount rules and coupon campaigns.                    |
 
 
-
-
 ## 4. Table Relationship Summary
 
 ```text
@@ -71,7 +67,7 @@ customers 1--N returns
 
 brands 1--N products
 
-categories 1--N categories
+categories 1--N categories as the relationship between child categories and parent categories
 products N--N categories through product_categories
 
 suppliers N--N products through supplier_products
