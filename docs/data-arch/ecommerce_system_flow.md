@@ -18,8 +18,6 @@ Source Application
 -> MinIO / S3 lakehouse storage
 ```
 
-
-
 ## 2. Domain Overview
 
 The system represents an ecommerce platform that sells computer hardware such as CPUs, GPUs, RAM, SSDs, monitors, peripherals, power supplies, cases, and cooling products.
@@ -729,6 +727,8 @@ refunded
 partially_refunded
 ```
 
+
+
 ### 7.6 Shipment Flow
 
 ```text
@@ -761,6 +761,8 @@ delivered
 failed_delivery
 returned_to_sender
 ```
+
+
 
 ### 7.7 Return and Refund Flow
 
@@ -804,6 +806,8 @@ refunded
 closed
 ```
 
+
+
 ### 7.8 Supplier Restocking Flow
 
 ```text
@@ -841,6 +845,8 @@ received
 cancelled
 ```
 
+
+
 ### 7.9 Product Price Change Flow
 
 ```text
@@ -866,7 +872,11 @@ Never calculate historical revenue from current product price.
 Use order_items.unit_price.
 ```
 
+
+
 ## 8. Table Classification for CDC
+
+
 
 ### 8.1 Current-State Tables
 
@@ -889,6 +899,8 @@ returns
 promotions
 ```
 
+
+
 ### 8.2 Relationship Tables
 
 These tables represent many-to-many relationships or child records.
@@ -902,6 +914,8 @@ purchase_order_items
 return_items
 ```
 
+
+
 ### 8.3 Event-Like Tables
 
 These tables behave like business history and are useful as append-style analytical facts.
@@ -914,7 +928,11 @@ return_items
 purchase_order_items
 ```
 
+
+
 ## 9. Recommended Implementation Phases
+
+
 
 ### Phase 1: Core Operational Domain
 
@@ -948,6 +966,8 @@ Business flows:
 - Payment success/failure.
 - Shipment status updates.
 
+
+
 ### Phase 2: Inventory and Supplier Complexity
 
 Add supplier restocking and more realistic inventory behavior.
@@ -969,6 +989,8 @@ Business flows:
 - Product restocking.
 - Inventory movement history.
 
+
+
 ### Phase 3: Returns and Refunds
 
 Add post-purchase lifecycle behavior.
@@ -988,6 +1010,8 @@ Business flows:
 - Inventory restoration.
 - Refund handling.
 
+
+
 ### Phase 4: Promotions and Analytics Readiness
 
 Add discount and campaign logic.
@@ -1003,6 +1027,8 @@ Business flows:
 - Promotion creation.
 - Coupon applied to order.
 - Discount analytics.
+
+
 
 ## 10. Recommended API Actions for Source Application
 
@@ -1037,6 +1063,8 @@ PATCH  /purchase-orders/{purchase_order_id}/receive
 POST   /orders/{order_id}/returns
 PATCH  /returns/{return_id}/status
 ```
+
+
 
 ## 11. Recommended Event Scenarios for Mock Data Generation
 
@@ -1079,6 +1107,8 @@ checkout_cart
 -> update carts
 ```
 
+
+
 ## 12. Data Consistency Rules
 
 Recommended rules:
@@ -1093,6 +1123,8 @@ Recommended rules:
 - `return_items.quantity_returned` must not exceed original `order_items.quantity`.
 - `inventory_movements.quantity_after` should reflect the inventory state after the movement.
 - `purchase_order_items.quantity_received` must not exceed `quantity_ordered`.
+
+
 
 ## 13. CDC Design Notes
 
@@ -1131,6 +1163,8 @@ cdc.ecommerce.return_items
 cdc.ecommerce.promotions
 ```
 
+
+
 ## 14. Lakehouse Mapping
 
 Recommended Iceberg table mapping:
@@ -1162,6 +1196,8 @@ gold.payment_failure_rate
 gold.return_rate_by_product
 gold.supplier_lead_time_performance
 ```
+
+
 
 ## 15. First Build Target
 
