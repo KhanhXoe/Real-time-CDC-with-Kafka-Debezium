@@ -11,7 +11,7 @@
     "plugin.name": "pgoutput",
     "publication.name": "cdc_publication",
     "slot.name": "debezium_slot",
-    "table.include.list": "ecommerce.customers,ecommerce.products,ecommerce.orders,ecommerce.order_items,ecommerce.inventory,ecommerce.debezium_signals",
+    "table.include.list": "ecommerce.customers,ecommerce.customer_addresses,ecommerce.brands,ecommerce.categories,ecommerce.products,ecommerce.product_categories,ecommerce.suppliers,ecommerce.supplier_products,ecommerce.warehouses,ecommerce.inventory,ecommerce.inventory_movements,ecommerce.purchase_orders,ecommerce.purchase_order_items,ecommerce.carts,ecommerce.cart_items,ecommerce.promotions,ecommerce.orders,ecommerce.order_items,ecommerce.payments,ecommerce.shipments,ecommerce.returns,ecommerce.return_items,ecommerce.debezium_signals",
 
     "replica.identity.autoset.values": "ecommerce.*:FULL",
 
