@@ -1,117 +1,146 @@
 # Real-time CDC Pipeline
 
-A production-style **Change Data Capture (CDC)** pipeline that streams every INSERT, UPDATE, and DELETE from PostgreSQL to Kafka in real time — no polling, no delay. Today it runs end-to-end locally; the roadmap extends it into a **streaming lakehouse** (Flink → Iceberg → MinIO/S3) with a clear migration path to AWS.
+A local **Change Data Capture (CDC)** lab for a realistic computer-hardware ecommerce domain.
+
+The current pipeline streams PostgreSQL row changes through Debezium into Kafka, then exposes the stream through Kafka UI and a Streamlit dashboard. Business changes are generated through a FastAPI mock source application instead of direct random inserts, so the CDC events look like real customer, cart, order, payment, shipment, and inventory workflows.
+
+Target path:
+
+```text
+Source business API -> PostgreSQL -> Debezium -> Kafka -> Dashboard / Consumers
+```
+
+The longer-term lakehouse target remains:
+
+```text
+PostgreSQL -> Debezium -> Kafka -> Flink -> Iceberg -> MinIO/S3
+```
 
 ---
 
-## Architecture (today)
+## Architecture
 
+```text
+┌──────────────────────┐       SQL writes        ┌──────────────────────┐
+│ Mock Business API    │ ──────────────────────► │ PostgreSQL 15         │
+│ FastAPI, host:8000   │                         │ schema: ecommerce     │
+└──────────────────────┘                         └──────────┬───────────┘
+                                                             │ WAL logical replication
+                                                   ┌─────────▼──────────┐
+                                                   │ Debezium Connect   │
+                                                   │ pgoutput plugin    │
+                                                   └─────────┬──────────┘
+                                                             │ JSON CDC events
+                                                   ┌─────────▼──────────┐
+                                                   │ Kafka, KRaft mode  │
+                                                   └─────────┬──────────┘
+                                      ┌──────────────────────┼──────────────────────┐
+                                      │                      │                      │
+                            ┌─────────▼─────────┐  ┌─────────▼─────────┐  ┌─────────▼─────────┐
+                            │ Kafka UI          │  │ Streamlit         │  │ Future consumers  │
+                            │ topic inspection  │  │ CDC dashboard     │  │ Flink/lakehouse   │
+                            └───────────────────┘  └───────────────────┘  └───────────────────┘
 ```
-┌─────────────────────┐   WAL (logical replication)   ┌─────────────────┐
-│   PostgreSQL 15     │ ─────────────────────────────► │    Debezium     │
-│  schema: ecommerce  │                                │  Kafka Connect  │
-└─────────────────────┘                                └────────┬────────┘
-                                                                │ JSON events
-                                                       ┌────────▼────────┐
-                                                       │      Kafka      │
-                                                       │   (KRaft mode)  │
-                                                       └────────┬────────┘
-                                          ┌────────────────────┼────────────────────┐
-                                          │                    │                    │
-                               ┌──────────▼──────┐  ┌─────────▼──────┐  ┌─────────▼──────────┐
-                               │   Kafka UI      │  │   Dashboard    │  │  Flink → Iceberg   │
-                               │  (monitoring)   │  │  (Streamlit)   │  │  (lakehouse, next) │
-                               └─────────────────┘  └────────────────┘  └────────────────────┘
-```
 
-**How it works:**
-1. PostgreSQL writes all changes to its **WAL (Write-Ahead Log)** in `logical` mode.
-2. Debezium reads the WAL via a **replication slot** and **publication**, packaging each change as a JSON event.
-3. Events land on **Kafka topics** (`cdc.ecommerce.<table>`), partitioned and retained for downstream consumers.
-4. The Streamlit dashboard consumes topics directly and renders live metrics.
+How it works:
 
-> The fourth box — **Flink → Iceberg** — is the next milestone. See [Roadmap](#roadmap--from-cdc-demo-to-streaming-lakehouse) for the full target architecture.
+1. The mock API performs valid ecommerce actions against PostgreSQL.
+2. PostgreSQL writes all table changes to WAL with `wal_level = logical`.
+3. Debezium reads the WAL through publication `cdc_publication` and slot `debezium_slot`.
+4. Debezium publishes JSON events to Kafka topics named `cdc.ecommerce.<table>`.
+5. Kafka UI and the Streamlit dashboard consume the topics for inspection and live metrics.
 
 ---
 
 ## Tech Stack
 
-| Service | Image / Tool | Port | Role |
-|---------|-------------|------|------|
-| PostgreSQL 15 | `postgres:15` | `5432` | Source database — logical replication enabled |
-| Kafka | `confluentinc/cp-kafka:latest` | `9092` / `29092` | Message broker — KRaft mode (no Zookeeper) |
-| Debezium | `debezium/connect:2.7.3.Final` | `8083` | CDC engine — bridges Postgres WAL to Kafka |
-| Kafka UI | `provectuslabs/kafka-ui:latest` | `8080` | Web UI to inspect topics and messages |
-| Adminer | `adminer:latest` | `8081` | Lightweight PostgreSQL web UI |
-| Dashboard | `./dashboard` (Streamlit) | `8501` | Real-time CDC event dashboard from Kafka |
+| Component | Tool / Image | Port | Role |
+|-----------|--------------|------|------|
+| PostgreSQL | `postgres:15` | `5432` | Source operational database with logical replication |
+| Kafka | `confluentinc/cp-kafka:latest` | `9092`, `29092` | KRaft broker for CDC topics |
+| Debezium | `debezium/connect:2.7.3.Final` | `8083` | PostgreSQL WAL to Kafka connector |
+| Kafka UI | `provectuslabs/kafka-ui:latest` | `8080` | Topic, message, and connector inspection |
+| Adminer | `adminer:latest` | `8081` | PostgreSQL web UI |
+| Dashboard | `./dashboard` Streamlit app | `8501` | Real-time CDC event dashboard |
+| Mock API | `scripts/mock_business_api.py` | `8000` | Source-app simulator and scenario scheduler |
 
-*Coming in the roadmap:* **Apache Flink** (stream processor), **Apache Iceberg** (table format), **MinIO** (S3-compatible object store).
+Host Python dependencies are in `requirements.txt`.
 
 ---
 
 ## Data Model
 
-Schema `ecommerce` in database `enterprise_db` — simulates a computer hardware e-commerce store.
+Database: `enterprise_db`
 
-```
-ecommerce
-├── customers        — buyers with loyalty tiers: BRONZE / SILVER / GOLD / PLATINUM
-├── products         — catalog (CPU, GPU, RAM, SSD, PSU, Case, Cooler, Monitor, Peripheral)
-├── orders           — orders with auto-generated number (ORD-YYYY-NNNNNN)
-├── order_items      — line items per order (FK → orders, products)
-├── inventory        — stock levels per product across warehouses A/B/C
-├── audit_logs       — manual change tracking log
-├── cdc_heartbeat    — Debezium heartbeat table (prevents WAL bloat)
-├── debezium_signals — send signals to Debezium (incremental snapshot, etc.)
-└── cdc_metrics      — trigger-based counter: INSERT/UPDATE/DELETE per table
-```
+Schema: `ecommerce`
 
-Debezium tracks 6 tables via `cdc_publication`:
-`customers`, `products`, `orders`, `order_items`, `inventory`, `debezium_signals`
+The schema models an ecommerce business that sells computer hardware:
+
+| Area | Tables |
+|------|--------|
+| Customer | `customers`, `customer_addresses` |
+| Catalog | `brands`, `categories`, `products`, `product_categories` |
+| Supplier | `suppliers`, `supplier_products` |
+| Inventory | `warehouses`, `inventory`, `inventory_movements` |
+| Purchasing | `purchase_orders`, `purchase_order_items` |
+| Cart | `carts`, `cart_items` |
+| Order | `orders`, `order_items` |
+| Payment | `payments` |
+| Fulfillment | `shipments` |
+| Return | `returns`, `return_items` |
+| Promotion | `promotions` |
+| CDC support | `cdc_heartbeat`, `debezium_signals`, `cdc_metrics`, `audit_logs` |
+
+See:
+
+- `docs/data-arch/business_flow.md` for business semantics.
+- `docs/data-arch/system_flow.md` for CDC and target system flow.
+- `docs/data-arch/erDiagram.txt` for the ERD source.
 
 ---
 
 ## Project Structure
 
-```
-Real-time CDC/
+```text
+.
 ├── docker-compose.yml
-├── requirements.txt              # host-side deps for generate_data.py
+├── requirements.txt
 ├── postgres/
-│   ├── init.sql                  # schema, seed data, triggers, functions
+│   ├── init.sql                  # ecommerce schema, triggers, publication, helper views
 │   ├── postgresql.conf           # logical replication settings
 │   └── pg_hba.conf
 ├── debezium/
-│   └── postgres-connector.json   # connector config
+│   └── postgres-connector.json   # Debezium PostgreSQL connector config
 ├── scripts/
-│   └── generate_data.py          # continuous data generator
-└── dashboard/
-    ├── app.py                    # Streamlit real-time dashboard
-    ├── Dockerfile
-    └── requirements.txt
+│   └── mock_business_api.py      # FastAPI source-app simulator
+├── dashboard/
+│   ├── app.py                    # Streamlit CDC dashboard
+│   ├── Dockerfile
+│   └── requirements.txt
+└── docs/
+    ├── README.md
+    └── data-arch/
+        ├── business_flow.md
+        ├── erDiagram.txt
+        └── system_flow.md
 ```
-
-A [proposed structure](#proposed-file-structure) for the Flink/lakehouse work is described in the roadmap.
 
 ---
 
 ## Quick Start
 
-### 1. Start the stack
+### 1. Start infrastructure
 
 ```bash
 docker compose up -d
-```
-
-Wait ~30 seconds for all services to become healthy:
-
-```bash
 docker compose ps
 ```
 
+Wait until PostgreSQL, Kafka, Debezium, Kafka UI, and the dashboard are healthy or running.
+
 ### 2. Register the Debezium connector
 
-This step is **required** — without it Kafka receives nothing.
+This step is required after a fresh start/reset.
 
 ```bash
 curl -X POST http://localhost:8083/connectors \
@@ -119,283 +148,264 @@ curl -X POST http://localhost:8083/connectors \
   -d @debezium/postgres-connector.json
 ```
 
-Verify it is running:
+Check connector status:
 
 ```bash
 curl -s http://localhost:8083/connectors/postgres-connector/status | python3 -m json.tool
 ```
 
-### 3. Generate data
+### 3. Run the mock business API
+
+The API runs on the host and connects to PostgreSQL through `localhost:5432`.
 
 ```bash
 pip install -r requirements.txt
-
-# Default: 2 orders every 5 seconds
-python scripts/generate_data.py
-
-# Faster for demo
-python scripts/generate_data.py --interval 2 --orders-per-tick 5
+uvicorn scripts.mock_business_api:app --host 0.0.0.0 --port 8000
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--interval` | `5.0` | Seconds between ticks |
-| `--orders-per-tick` | `2` | Orders created per tick |
-| `--new-customers` | `1` | New customers per tick (40% chance) |
-| `--once` | off | Run one tick then exit |
+Open the control panel:
 
-### 4. Open the UIs
+```text
+http://localhost:8000
+```
 
-| UI | URL | Credentials |
-|----|-----|-------------|
-| Kafka UI | http://localhost:8080 | — |
-| Adminer (DB) | http://localhost:8081 | Server: `postgres` · User: `admin` · Password: `admin` · DB: `enterprise_db` |
-| CDC Dashboard | http://localhost:8501 | — |
-| Debezium API | http://localhost:8083 | — |
+Useful API checks:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/actions
+```
+
+### 4. Generate business events
+
+Bootstrap catalog and inventory:
+
+```bash
+curl -X POST http://localhost:8000/scenarios/bootstrap_catalog \
+  -H "Content-Type: application/json" \
+  -d '{"products":10,"warehouses":3}'
+```
+
+Create one checkout flow:
+
+```bash
+curl -X POST http://localhost:8000/scenarios/customer_cart_checkout \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Create a paid and shipped order:
+
+```bash
+curl -X POST http://localhost:8000/scenarios/paid_shipped_order \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Start scheduled random activity:
+
+```bash
+curl -X POST http://localhost:8000/schedules \
+  -H "Content-Type: application/json" \
+  -d '{"scenario":"random_activity","interval_seconds":5,"max_runs":50,"payload":{}}'
+```
+
+Available scenarios:
+
+- `bootstrap_catalog`
+- `customer_cart_checkout`
+- `paid_shipped_order`
+- `order_lifecycle_step`
+- `replenish_inventory`
+- `sales_burst`
+- `random_activity`
+
+### 5. Open UIs
+
+| UI | URL | Notes |
+|----|-----|-------|
+| Mock API control panel | http://localhost:8000 | Run actions, scenarios, and schedules |
+| Kafka UI | http://localhost:8080 | Inspect topics, messages, and Debezium connector |
+| Adminer | http://localhost:8081 | Server: `postgres`, user: `admin`, password: `admin`, DB: `enterprise_db` |
+| CDC Dashboard | http://localhost:8501 | Live Streamlit metrics from Kafka |
+| Debezium API | http://localhost:8083 | Kafka Connect REST API |
 
 ---
 
 ## Kafka Topics
 
-| Topic | Source table |
-|-------|-------------|
-| `cdc.ecommerce.customers` | customers |
-| `cdc.ecommerce.products` | products |
-| `cdc.ecommerce.orders` | orders |
-| `cdc.ecommerce.order_items` | order_items |
-| `cdc.ecommerce.inventory` | inventory |
-| `debezium-config` | Debezium internal |
-| `debezium-offsets` | Debezium offset tracking |
-| `debezium-status` | Debezium connector state |
+Debezium uses topic prefix `cdc`, so table topics follow this format:
 
-Each event payload:
+```text
+cdc.ecommerce.<table_name>
+```
+
+Configured source tables:
+
+```text
+customers
+customer_addresses
+brands
+categories
+products
+product_categories
+suppliers
+supplier_products
+warehouses
+inventory
+inventory_movements
+purchase_orders
+purchase_order_items
+carts
+cart_items
+promotions
+orders
+order_items
+payments
+shipments
+returns
+return_items
+debezium_signals
+```
+
+Debezium internal topics:
+
+```text
+debezium-config
+debezium-offsets
+debezium-status
+```
+
+The Streamlit dashboard currently subscribes to:
+
+```text
+cdc.ecommerce.customers
+cdc.ecommerce.customer_addresses
+cdc.ecommerce.products
+cdc.ecommerce.orders
+cdc.ecommerce.order_items
+cdc.ecommerce.inventory
+cdc.ecommerce.inventory_movements
+cdc.ecommerce.carts
+cdc.ecommerce.cart_items
+cdc.ecommerce.payments
+cdc.ecommerce.shipments
+```
+
+Event shape with schemas disabled:
 
 ```json
 {
-  "before": { "id": "...", "status": "PROCESSING" },
-  "after":  { "id": "...", "status": "SHIPPED" },
-  "op":     "u",
-  "ts_ms":  1782662915000,
-  "source": { "table": "orders", "lsn": 12345678 }
+  "before": null,
+  "after": {
+    "order_id": "97d2...",
+    "order_status": "paid",
+    "total_amount": 1299.0
+  },
+  "source": {
+    "version": "2.7.3.Final",
+    "connector": "postgresql",
+    "db": "enterprise_db",
+    "schema": "ecommerce",
+    "table": "orders"
+  },
+  "op": "c",
+  "ts_ms": 1782662915000
 }
 ```
 
-`op` values: `c` = INSERT · `u` = UPDATE · `d` = DELETE · `r` = snapshot READ
+Operation values:
+
+- `c`: insert
+- `u`: update
+- `d`: delete
+- `r`: initial snapshot read
 
 ---
 
 ## Key Configuration
 
-### PostgreSQL — logical replication (`postgresql.conf`)
+### PostgreSQL logical replication
+
+`postgres/postgresql.conf`:
 
 ```ini
-wal_level = logical        # required for CDC
+wal_level = logical
 max_wal_senders = 10
 max_replication_slots = 10
-wal_keep_size = 1GB        # retain WAL long enough for Debezium to catch up
+wal_keep_size = 1GB
 ```
 
-### Debezium connector highlights (`debezium/postgres-connector.json`)
+`postgres/init.sql` creates:
+
+- Schema `ecommerce`.
+- Publication `cdc_publication`.
+- Debezium signal table `ecommerce.debezium_signals`.
+- Heartbeat table `ecommerce.cdc_heartbeat`.
+- Trigger-maintained event counters in `ecommerce.cdc_metrics`.
+- Helper views/functions such as `dashboard_metrics`, `cdc_replication_status`, and `get_table_counts()`.
+
+### Debezium connector
+
+`debezium/postgres-connector.json`:
 
 ```json
-"plugin.name":              "pgoutput",
-"snapshot.mode":            "initial",
-"replica.identity.autoset": "ecommerce.*:FULL",
-"heartbeat.interval.ms":    "10000",
-"provide.transaction.metadata": "true",
-"decimal.handling.mode":    "double"
+{
+  "topic.prefix": "cdc",
+  "plugin.name": "pgoutput",
+  "publication.name": "cdc_publication",
+  "slot.name": "debezium_slot",
+  "snapshot.mode": "initial",
+  "replica.identity.autoset.values": "ecommerce.*:FULL",
+  "heartbeat.interval.ms": "10000",
+  "signal.enabled.channels": "source",
+  "signal.data.collection": "ecommerce.debezium_signals",
+  "decimal.handling.mode": "double",
+  "provide.transaction.metadata": "true"
+}
 ```
 
-`FULL` replica identity ensures `before` values are always present on UPDATE/DELETE.
+`replica.identity.autoset.values = ecommerce.*:FULL` keeps full `before` values available for updates and deletes.
 
-### Kafka — KRaft mode (no Zookeeper)
+The connector masks `ecommerce.customers.phone` with `column.mask.with.length.chars`.
 
-Two listeners are configured:
-- `PLAINTEXT://kafka:9092` — for inter-container communication (Debezium, Dashboard in Docker)
-- `PLAINTEXT_HOST://localhost:29092` — for connections from the host machine
+### Kafka listeners
+
+Kafka exposes two listeners:
+
+- `kafka:9092` for containers on the Docker network.
+- `localhost:29092` for host-side clients.
+
+The dashboard container uses `KAFKA_BROKER=kafka:9092`.
 
 ---
 
 ## Reset
 
-Full reset — wipes all data and volumes:
+Full reset, including local PostgreSQL bind-mounted data and Kafka volume:
 
 ```bash
-docker compose down
+docker compose down -v
 rm -rf postgres/data
 docker compose up -d
-# Re-register the connector (step 2 above)
 ```
+
+Then register the connector again and rerun the mock API scenarios.
 
 ---
 
-# Roadmap — From CDC Demo to Streaming Lakehouse
+## Roadmap
 
-The pipeline above is the foundation. The next direction is to turn it into an end-to-end **streaming lakehouse** that runs locally and maps cleanly onto AWS:
-
-```text
-PostgreSQL → Debezium → Kafka → Flink → Iceberg → MinIO/S3
-```
-
-A Flink job consumes the `cdc.ecommerce.*` topics, parses Debezium payloads into row-level change events, and applies them to **Iceberg** tables stored on **MinIO** (an S3-compatible object store). Once the local flow is stable, the same job maps to AWS using RDS PostgreSQL, MSK, Amazon Managed Service for Apache Flink, S3, and Glue Catalog — without rewriting the processing logic.
-
-## Target Architecture
-
-```
-┌──────────────┐   WAL    ┌──────────────┐   JSON    ┌──────────────┐
-│ PostgreSQL15 │ ───────► │   Debezium   │ ────────► │    Kafka     │
-│  ecommerce   │ logical  │ Kafka Connect│  events   │   (KRaft)    │
-└──────────────┘          └──────────────┘           └──────┬───────┘
-                                                            │ cdc.ecommerce.*
-                                                     ┌──────▼───────┐
-                                                     │    Flink     │  parse Debezium,
-                                                     │  stream job  │  apply by primary key
-                                                     └──────┬───────┘
-                                                            │ upsert / delete
-                                                     ┌──────▼───────┐
-                                                     │   Iceberg    │  lakehouse
-                                                     │   tables     │  table format
-                                                     └──────┬───────┘
-                                                            │
-                                                     ┌──────▼───────┐
-                                                     │  MinIO / S3  │  warehouse storage
-                                                     └──────────────┘
-```
-
-## Current State vs. What's Missing
-
-**Already built:**
-- `docker-compose.yml` starts PostgreSQL, Kafka, Debezium Connect, Kafka UI, Adminer, and the Streamlit dashboard.
-- PostgreSQL logical replication via `postgres/postgresql.conf`.
-- The `ecommerce` schema with source tables, `cdc_publication`, replication-slot config, a heartbeat table, and a Debezium signal table.
-- `debezium/postgres-connector.json` — initial snapshot + CDC streaming into `cdc.ecommerce.*` topics.
-- `scripts/generate_data.py` — continuous INSERT/UPDATE/DELETE generator.
-
-**Missing for a full lakehouse:**
-- A Flink job that consumes Kafka CDC events.
-- A durable analytics sink (Iceberg on MinIO/S3).
-- Automation scripts for registering the connector, submitting the Flink job, and verifying output.
-- Checkpoint and restart behavior for the stream processor.
-- Observability for Kafka lag, connector status, Flink metrics, and storage output.
-- Environment-specific config for local vs. AWS deployment.
-
-## Milestones
-
-### M1 — Local End-to-End Lakehouse Demo
-
-Run the full CDC flow from PostgreSQL to Iceberg on MinIO.
-
-- Add MinIO and a Flink JobManager/TaskManager to `docker-compose.yml`, with the dependencies needed to read Kafka and write Iceberg to S3-compatible storage.
-- Implement a Flink job that reads all five `cdc.ecommerce.*` topics, extracts operation type / primary key / before-after payloads / source timestamp, and writes to Iceberg tables matching the source schema.
-- Add scripts to register the connector, submit the Flink job, generate test events, and verify output in MinIO/Iceberg.
-
-**Done when:** `docker compose up -d` starts the full stack, the connector registers and topics appear, the Flink job consumes events, and inserts/updates/deletes are reflected correctly in Iceberg tables backed by MinIO objects.
-
-### M2 — Reliability Hardening
-
-Make the pipeline restartable and avoid event loss in local failure scenarios.
-
-- Enable Flink checkpointing with checkpoint storage on MinIO; configure a restart strategy.
-- Define primary-key and upsert/delete behavior per Iceberg table; handle Debezium tombstone/delete events.
-- Validate duplicate-event handling and idempotency by primary key.
-- Document the delivery semantics (at-least-once vs. exactly-once) given the final Flink/Iceberg config.
-
-**Done when:** restarting a Flink TaskManager resumes from checkpoint, Kafka events are not lost, and updates/deletes do not create incorrect records.
-
-### M3 — Observability and Operations
-
-Make pipeline health, lag, and failures visible.
-
-- Health checks and runbook notes for PostgreSQL, Kafka, Debezium, Flink, and MinIO.
-- Track connector status (Kafka Connect REST API), Kafka consumer lag for the Flink group, and Flink job/checkpoint status.
-- Script-based validation of Iceberg row counts and latest updates.
-- Troubleshooting notes: connector failure, replication-slot lag, missing Kafka messages, Flink job failure, MinIO permission errors.
-
-**Done when:** connector status is quick to check (RUNNING/FAILED), Flink Kafka lag is inspectable, and the latest successful Iceberg write can be verified.
-
-### M4 — AWS-Ready Deployment Path
-
-Structure the pipeline so it deploys to AWS without rewriting the processing flow.
-
-- Split configuration into local and AWS profiles; make the MinIO/S3 endpoint configurable.
-- Add support for Glue Catalog as the Iceberg catalog.
-- Document the RDS logical-replication settings and the network/security requirements (security groups, subnets, IAM roles, S3 bucket policy, Glue permissions, MSK connectivity).
-- Default AWS target is **Amazon Managed Service for Apache Flink**, with EKS/ECS as alternatives when runtime control is required.
-
-**Done when:** the same Flink job runs against S3 + Glue Catalog, no cloud credentials are hard-coded, and a minimum AWS deployment checklist exists.
-
-> **Principle:** endpoints, credentials, bucket names, warehouse paths, catalog type, and connector settings come from environment variables or env-specific config files. Never hard-code AWS values in application code.
-
-## Data Design & Mapping
-
-| Kafka topic | Iceberg table |
-| --- | --- |
-| `cdc.ecommerce.customers` | `ecommerce.customers` |
-| `cdc.ecommerce.products` | `ecommerce.products` |
-| `cdc.ecommerce.orders` | `ecommerce.orders` |
-| `cdc.ecommerce.order_items` | `ecommerce.order_items` |
-| `cdc.ecommerce.inventory` | `ecommerce.inventory` |
-
-Each Iceberg table keeps the business columns from PostgreSQL and adds CDC metadata:
-
-- `cdc_op` — Debezium operation (`c`, `u`, `d`, `r`)
-- `cdc_source_ts_ms` — source event timestamp
-- `cdc_processed_at` — when Flink processed the event
-- `cdc_topic` / `cdc_partition` / `cdc_offset` — Kafka provenance
-
-Updates and deletes are applied by the source table's primary key. For a current-state table, use Iceberg upsert/delete semantics rather than an append-only log; if full audit history is needed, add a separate append-only changelog layer.
-
-## Local → AWS Migration Map
-
-| Local component | AWS equivalent | Notes |
-|----------------|----------------|-------|
-| PostgreSQL 15 (Docker) | **Amazon RDS for PostgreSQL** (or Aurora) | Enable `rds.logical_replication = 1` |
-| Debezium (Docker) | **Debezium on ECS Fargate** or **AWS DMS** | DMS is simpler to operate; Debezium gives more control |
-| Kafka (KRaft) | **Amazon MSK** | Removes broker management overhead |
-| Flink (Docker) | **Amazon Managed Service for Apache Flink** | EKS/ECS when runtime control is required |
-| MinIO | **Amazon S3** | Iceberg warehouse storage |
-| Local Iceberg catalog | **AWS Glue Data Catalog** | Shared metastore for Iceberg tables |
-| Hard-coded local config | **AWS Secrets Manager / SSM Parameter Store** | Endpoints, credentials, bucket names |
-| Local metrics & logs | **CloudWatch + MSK/Flink metrics** | Connector health, lag, checkpoints |
-| `generate_data.py` (local) | **ECS Task** or **AWS Batch** | Scheduled or on-demand |
-
-**What stays the same:** the Debezium connector config, the schema design, and the Kafka topic naming convention all carry forward. The main differences are the broker endpoint and authentication method (IAM or SASL/SCRAM on MSK), and the Iceberg catalog/storage targets.
-
-## Proposed File Structure
-
-When lakehouse implementation starts, add:
+The next milestone is to add a streaming lakehouse consumer:
 
 ```text
-docs/
-  AWS_DEPLOYMENT.md      # added when M4 starts
-  TROUBLESHOOTING.md     # added after real runtime issues are observed
-
-flink/
-  jobs/
-  conf/
-  Dockerfile
-
-scripts/
-  register-connector.sh
-  submit-flink-job.sh
-  generate-cdc-events.sh
-  verify-lake-output.sh
-
-config/
-  local.env.example      # placeholders only, never real secrets
-  aws.env.example
+PostgreSQL -> Debezium -> Kafka -> Flink -> Iceberg -> MinIO/S3
 ```
 
-## Recommended Next Steps
+Expected work:
 
-1. Add MinIO and Flink to Docker Compose.
-2. Choose the Flink job packaging approach and required Iceberg/Kafka dependencies.
-3. Implement the job for one table first — start with `customers`.
-4. Verify insert/update/delete behavior for `customers`.
-5. Expand the job to the remaining tables.
-6. Add checkpointing and restart tests.
-7. Add the runbook and AWS deployment mapping.
-
-## Out of Scope (for the first milestone)
-
-Keep these until the local end-to-end flow is stable: real AWS deployment, full CI/CD, Terraform/IaC, complete monitoring dashboards, a dedicated data-quality framework, multi-tenant/multi-database CDC, and a Schema Registry (unless the first demo needs it).
+- Consume `cdc.ecommerce.*` topics from Flink.
+- Parse Debezium envelopes into row-level change events.
+- Apply inserts, updates, and deletes to Iceberg tables.
+- Store Iceberg data locally in MinIO.
+- Keep the design portable to AWS equivalents: RDS PostgreSQL, MSK, Managed Service for Apache Flink, S3, and Glue Catalog.

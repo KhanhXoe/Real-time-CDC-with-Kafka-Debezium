@@ -1710,7 +1710,7 @@ UI_HTML = r"""
               <input id="bootstrapProducts" type="number" min="1" max="50" value="8" />
             </label>
             <label>Warehouses
-              <input id="bootstrapWarehouses" type="number" min="1" max="3" value="2" />
+              <input id="bootstrapWarehouses" type="number" min="1" max="__MAX_BOOTSTRAP_WAREHOUSES__" value="2" />
             </label>
           </div>
           <div class="quick-grid">
@@ -1743,6 +1743,7 @@ UI_HTML = r"""
             <label>Scenario
               <select id="scheduleScenario">
                 <option value="random_activity">random_activity</option>
+                <option value="bootstrap_catalog">bootstrap_catalog</option>
                 <option value="paid_shipped_order">paid_shipped_order</option>
                 <option value="customer_cart_checkout">customer_cart_checkout</option>
                 <option value="replenish_inventory">replenish_inventory</option>
@@ -2124,7 +2125,7 @@ UI_HTML = r"""
 
 @app.get("/", response_class=HTMLResponse)
 def control_panel() -> str:
-    return UI_HTML
+    return UI_HTML.replace("__MAX_BOOTSTRAP_WAREHOUSES__", str(len(WAREHOUSE_BLUEPRINTS)))
 
 
 @app.get("/ui/summary")
